@@ -31,4 +31,8 @@ func doReduce(
 	// 	enc.Encode(KeyValue{key, reduceF(...)})
 	// }
 	// file.Close()
+	// for m := 0; m <= nMap; m++ {
+	// fileName := reduceName(jobName, m, reduceTaskNumber)
+	// var collection [][]string
+	// }
 }
