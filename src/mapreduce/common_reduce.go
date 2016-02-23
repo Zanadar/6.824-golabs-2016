@@ -74,7 +74,6 @@ func doReduce(
 	enc := json.NewEncoder(mergeFile)
 	for k, v := range collection {
 		enc.Encode(KeyValue{k, reduceF(k, v)})
-		// log.Println(k, collection[k])
 	}
 	log.Printf("Collection is %d long", len(collection))
 	mergeFile.Close()
