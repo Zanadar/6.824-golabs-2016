@@ -2,7 +2,6 @@ package mapreduce
 
 import (
 	"encoding/json"
-	"fmt"
 	"hash/fnv"
 	"io/ioutil"
 	"log"
@@ -30,12 +29,13 @@ func doMap(
 
 	// for i -> nRudeuce if i = ihash(key) write key/ value into that file
 
-	fmt.Println("nReduce is", nReduce)
-	for i := 0; i <= nReduce; i++ {
+	log.Printf("doMap: 'Jobname=%s' Called with 'nReduce=%d' and  'mapTaskNumber=%d'", jobName, nReduce,
+		mapTaskNumber)
+	for i := 0; i < nReduce; i++ {
 		filename := reduceName(jobName, mapTaskNumber, i)
-		fmt.Println("Filename is ", filename)
 		err := os.Chmod(filename, 0777)
 		jsonFile, err := os.Create(filename)
+		log.Println("Created file", filename)
 		if err != nil {
 			log.Fatal("Problem creating file", err)
 		}

@@ -2,9 +2,10 @@ package mapreduce
 
 import (
 	"encoding/json"
-	"io/ioutil"
+	// "fmt"
+	"io"
 	"log"
-	// "os"
+	"os"
 )
 
 // doReduce does the job of a reduce worker: it reads the intermediate
@@ -38,18 +39,44 @@ func doReduce(
 	// 	enc.Encode(KeyValue{key, reduceF(...)})
 	// }
 	// file.Close()
-	for m := 0; m <= nMap; m++ {
-		filename := reduceName(jobName, m, reduceTaskNumber)
-		jsonFile, err := ioutil.ReadFile(filename)
-		if err != nil {
-			log.Fatal("Problem loading file", err)
-		}
-		var keyvals []KeyValue
-		err = json.Unmarshal(jsonFile, &keyvals)
-		if err != nil {
-			log.Fatalln("Problem unmarshalling JSON", err)
-		}
-		log.Println(keyvals)
-		// var collection map[string][]string
+	log.Printf("doReduce: 'Jobname=%s' Called with 'nMap=%d' and  'reduceTaskNumber=%d'", jobName, nMap, reduceTaskNumber)
+	// Create / Open MergeFile
+	mergePath := mergeName(jobName, reduceTaskNumber)
+	log.Printf("Mergepath is %s", mergePath)
+	mergeFile, err := os.Create(mergePath)
+	if err != nil {
+		log.Fatal("Err making MergeFile", err)
 	}
+
+	// a map for collecting the key/[]values
+	collection := make(map[string][]string)
+
+	for m := 0; m < nMap; m++ {
+		fileName := reduceName(jobName, m, reduceTaskNumber)
+		log.Printf("Opening reduceFile: %s", fileName)
+		reduceFile, err := os.Open(fileName)
+		if err != nil {
+			log.Fatal(err)
+		}
+		dec := json.NewDecoder(reduceFile)
+
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err == io.EOF {
+				break
+			} else if err != nil {
+				log.Fatal(err)
+			}
+			collection[kv.Key] = append(collection[kv.Key], kv.Value)
+		}
+
+		log.Println("M called:", m)
+	}
+	enc := json.NewEncoder(mergeFile)
+	for k, v := range collection {
+		enc.Encode(KeyValue{k, reduceF(k, v)})
+		// log.Println(k, collection[k])
+	}
+	log.Printf("Collection is %d long", len(collection))
+	mergeFile.Close()
 }
