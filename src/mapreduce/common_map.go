@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"hash/fnv"
 	"io/ioutil"
-	"log"
 	"os"
 )
 
@@ -29,15 +28,14 @@ func doMap(
 
 	// for i -> nRudeuce if i = ihash(key) write key/ value into that file
 
-	log.Printf("doMap: 'Jobname=%s' Called with 'nReduce=%d' and  'mapTaskNumber=%d'", jobName, nReduce,
-		mapTaskNumber)
+	//log.Printf("doMap: 'Jobname=%s' Called with 'nReduce=%d' and  'mapTaskNumber=%d'", jobName, nReduce, // mapTaskNumber)
 	for i := 0; i < nReduce; i++ {
 		filename := reduceName(jobName, mapTaskNumber, i)
 		err := os.Chmod(filename, 0777)
 		jsonFile, err := os.Create(filename)
-		log.Println("Created file", filename)
+		//log.Println("Created file", filename)
 		if err != nil {
-			log.Fatal("Problem creating file", err)
+			//log.Fatal("Problem creating file", err)
 		}
 		enc := json.NewEncoder(jsonFile)
 		for _, kv := range results {
@@ -45,7 +43,7 @@ func doMap(
 			if hash == i {
 				err := enc.Encode(&kv)
 				if err != nil {
-					log.Fatalln(err)
+					//log.Fatalln(err)
 				}
 			}
 		}
