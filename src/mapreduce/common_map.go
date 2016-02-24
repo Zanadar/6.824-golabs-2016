@@ -39,7 +39,7 @@ func doMap(
 		}
 		enc := json.NewEncoder(jsonFile)
 		for _, kv := range results {
-			hash := int(ihash(kv.Key)) % (i + 1)
+			hash := int(ihash(kv.Key)) % nReduce
 			if hash == i {
 				err := enc.Encode(&kv)
 				if err != nil {
