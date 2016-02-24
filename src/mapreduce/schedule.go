@@ -17,15 +17,24 @@ func (mr *Master) schedule(phase jobPhase) {
 	fmt.Printf("Schedule: %v %v tasks (%d I/Os)\n", ntasks, phase, nios)
 	// make sure a worker is dispatched for ever ntasks
 
-	dispatched := 0
-	for i := 0; i < ntasks; i++ {
-		args := DoTaskArgs{mr.jobName, mr.files[i], phase, i, nios}
-		select {
-		case worker := <-mr.registerChannel:
-			go call(worker, "Worker.DoTask", args, new(struct{}))
-			dispatched++
-		}
+	var done = make(chan bool)
 
+	for i := 0; i < ntasks; i++ {
+		go func(i int) {
+			worker := <-mr.registerChannel
+			args := DoTaskArgs{mr.jobName, mr.files[i], phase, i, nios}
+			ok := call(worker, "Worker.DoTask", args, new(struct{}))
+			for ok != true {
+				worker = <-mr.registerChannel
+				ok = call(worker, "Worker.DoTask", args, new(struct{}))
+			}
+			done <- true
+			mr.registerChannel <- worker
+		}(i)
+	}
+
+	for i := 0; i < ntasks; i++ {
+		<-done
 	}
 
 	// type DoTaskArgs struct {
