@@ -17,11 +17,14 @@ package raft
 //   in the same server.
 //
 
-import "sync"
-import "labrpc"
-
-// import "bytes"
-// import "encoding/gob"
+import (
+	"bytes"
+	"encoding/gob"
+	"labrpc"
+	"math/rand"
+	"sync"
+	"time"
+)
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -35,6 +38,11 @@ type ApplyMsg struct {
 	Snapshot    []byte // ignore for lab2; only used in lab3
 }
 
+type LogEntry struct {
+	command string
+	term    int
+}
+
 //
 // A Go object implementing a single Raft peer.
 //
@@ -45,10 +53,11 @@ type Raft struct {
 	me        int // index into peers[]
 	applyCh   chan ApplyMsg
 
+	electionTimer *time.Timer
 	// Persist these
 	currentTerm int // increases monotonically
 	votedFor    int
-	log         []string //maybe create a LogEntry struct?
+	log         []LogEntry //maybe create a LogEntry struct?
 
 	//Volatile state on all servers
 	commitIndex int // index of Highest entry known to be committed (initialize at zero)
@@ -102,12 +111,18 @@ func (rf *Raft) readPersist(data []byte) {
 	d.Decode(&rf.currentTerm)
 	d.Decode(&rf.votedFor)
 	d.Decode(&rf.log)
+
+	DPrintf("Current state is %v, %v, %v", rf.currentTerm, rf.votedFor, rf.log)
 }
 
 //
 // example RequestVote RPC arguments structure.
 //
 type RequestVoteArgs struct {
+	term         int
+	candidateID  int
+	lastLogIndex int
+	lastLogTerm  int
 	// Your data here.
 }
 
@@ -115,6 +130,8 @@ type RequestVoteArgs struct {
 // example RequestVote RPC reply structure.
 //
 type RequestVoteReply struct {
+	term         int
+	votedGranted bool
 	// Your data here.
 }
 
@@ -122,6 +139,14 @@ type RequestVoteReply struct {
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
+	DPrintf("VotedFor %d", rf.votedFor)
+	DPrintf("Vote request %v", args)
+	reply.term = rf.currentTerm
+	if args.term < rf.currentTerm {
+		reply.votedGranted = true
+	} else {
+		// rest of voting logic here
+	}
 	// Your code here.
 }
 
@@ -135,9 +160,22 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 // returns true if labrpc says the RPC was delivered.
 //
 func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *RequestVoteReply) bool {
+	DPrintf("Vote request called ------=============")
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
 }
+
+type AppendEntriesArgs struct {
+	Term         int //leaders term
+	LeaderID     int //to redirect requests to the leader
+	PrevLogIndex int
+	PrevLogTerm  int
+}
+
+type AppendEntriesReply struct {
+}
+
+func (rf *Raft) AppendEntries() {}
 
 //
 // the service using Raft (e.g. a k/v server) wants to start
@@ -185,6 +223,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.persister = persister
 	rf.me = me
 	rf.applyCh = applyCh
+
+	seed := time.Now().UnixNano()
+	rand.Seed(seed)
+	rf.electionTimer = time.NewTimer(time.Millisecond * time.Duration(rand.Intn(500))) //create a random timer here
+
+	DPrintf("I am per # %v", rf.me)
+	DPrintf("Timer at %v", rf.electionTimer)
 
 	// Your initialization code here.
 	rf.commitIndex = 0
