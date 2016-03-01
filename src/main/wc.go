@@ -17,9 +17,9 @@ func mapF(document string, value string) (res []mapreduce.KeyValue) {
 	f := func(c rune) bool {
 		return !unicode.IsLetter(c) && !unicode.IsNumber(c)
 	}
-	values := strings.FieldsFunc(value, f)
-	for _, v := range values {
-		result := mapreduce.KeyValue{v, "1"}
+	words := strings.FieldsFunc(value, f)
+	for _, word := range words {
+		result := mapreduce.KeyValue{word, "1"}
 		res = append(res, result)
 	}
 	return
@@ -29,15 +29,10 @@ func mapF(document string, value string) (res []mapreduce.KeyValue) {
 // list of that key's string value (merged across all inputs). The return value
 // should be a single output value for that key.
 func reduceF(key string, values []string) string {
-	// TODO: you also have to write this function
 	count := strconv.Itoa(len(values))
 	return count
 }
 
-// Can be run in 3 ways:
-// 1) Sequential (e.g., go run wc.go master sequential x1.txt .. xN.txt)
-// 2) Master (e.g., go run wc.go master localhost:7777 x1.txt .. xN.txt)
-// 3) Worker (e.g., go run wc.go worker localhost:7777 localhost:7778 &)
 func main() {
 	if len(os.Args) < 4 {
 		fmt.Printf("%s: see usage comments in file\n", os.Args[0])
