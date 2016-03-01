@@ -53,7 +53,8 @@ type Raft struct {
 	me        int // index into peers[]
 	applyCh   chan ApplyMsg
 
-	electionTimer *time.Timer
+	electionDuration time.Duration
+	electionTimer    *time.Timer
 	// Persist these
 	currentTerm int // increases monotonically
 	votedFor    int
@@ -226,10 +227,15 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	seed := time.Now().UnixNano()
 	rand.Seed(seed)
-	rf.electionTimer = time.NewTimer(time.Millisecond * time.Duration(rand.Intn(500))) //create a random timer here
+	rf.electionDuration = time.Millisecond * time.Duration(10+rand.Intn(500)) // save the duration for resets
+	rf.electionTimer = time.NewTimer(rf.electionDuration)                     //create a random timer here
+
+	go func() {
+		<-rf.electionTimer.C
+		DPrintf("Timer 2 expired for Server %v", me)
+	}()
 
 	DPrintf("I am per # %v", rf.me)
-	DPrintf("Timer at %v", rf.electionTimer)
 
 	// Your initialization code here.
 	rf.commitIndex = 0
