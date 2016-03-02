@@ -146,7 +146,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	reply.term = rf.currentTerm
 	if args.term < rf.currentTerm {
 		reply.votedGranted = true
-		DPrintf("%v", reply)
+		DPrintf("reply was %v", reply)
 	} else {
 		// rest of voting logic here
 	}
@@ -254,8 +254,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 					DPrintf("requesting vote with %v", args)
 					reply := &RequestVoteReply{}
 					ok := rf.sendRequestVote(i, args, reply)
-					DPrintf("Not okay %v", ok)
 					for ok != true {
+						DPrintf("Not okay %v", ok)
 						ok = rf.sendRequestVote(i, args, reply)
 					}
 					replies <- reply
