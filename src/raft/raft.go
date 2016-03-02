@@ -121,10 +121,10 @@ func (rf *Raft) readPersist(data []byte) {
 // example RequestVote RPC arguments structure.
 //
 type RequestVoteArgs struct {
-	term         int
-	candidateID  int
-	lastLogIndex int
-	lastLogTerm  int
+	Term         int
+	CandidateID  int
+	LastLogIndex int
+	LastLogTerm  int
 	// Your data here.
 }
 
@@ -132,8 +132,8 @@ type RequestVoteArgs struct {
 // example RequestVote RPC reply structure.
 //
 type RequestVoteReply struct {
-	term         int
-	votedGranted bool
+	Term         int
+	VotedGranted bool
 	// Your data here.
 }
 
@@ -143,12 +143,12 @@ type RequestVoteReply struct {
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	DPrintf("Vote request %v", args)
 	rf.resetElecTimer()
-	reply.term = rf.currentTerm
-	if args.term < rf.currentTerm {
-		reply.votedGranted = true
+	reply.Term = rf.currentTerm
+	if args.Term < rf.currentTerm {
+		reply.VotedGranted = true
 		DPrintf("reply was %v", reply)
 	} else {
-		// rest of voting logic here
+		DPrintf("not voting")
 	}
 	// Your code here.
 }
@@ -163,6 +163,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 // returns true if labrpc says the RPC was delivered.
 //
 func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *RequestVoteReply) bool {
+	rf.resetElecTimer()
 	DPrintf("Vote requested from peer %d------=============", server)
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
@@ -246,7 +247,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		<-rf.electionTimer.C
 		DPrintf("Server %d called for a vote", rf.me)
 		rf.currentTerm++
-		rf.resetElecTimer()
 		args := RequestVoteArgs{rf.currentTerm, rf.me, rf.commitIndex, rf.lastApplied}
 		for peer, _ := range peers {
 			if peer != rf.me {
@@ -262,12 +262,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				}(peer)
 			}
 		}
+		select {
+		case reply := <-replies:
+			DPrintf("Reply is %v", reply)
+		}
 	}()
 
-	select {
-	case reply := <-replies:
-		DPrintf("Reply is %v", reply)
-	}
 	return rf
 }
 
