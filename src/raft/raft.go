@@ -68,6 +68,7 @@ type Raft struct {
 	nextIndex  []int // per server, initialized to leader last log index + 1
 	matchIndex []int // per server, index of highest log entry known to be replciated on server
 
+	isleader bool
 	// Your data here.
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
@@ -140,11 +141,12 @@ type RequestVoteReply struct {
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
-	DPrintf("VotedFor %d", rf.votedFor)
 	DPrintf("Vote request %v", args)
+	rf.resetElecTimer()
 	reply.term = rf.currentTerm
 	if args.term < rf.currentTerm {
 		reply.votedGranted = true
+		DPrintf("%v", reply)
 	} else {
 		// rest of voting logic here
 	}
@@ -161,9 +163,13 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 // returns true if labrpc says the RPC was delivered.
 //
 func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *RequestVoteReply) bool {
-	DPrintf("Vote request called ------=============")
+	DPrintf("Vote requested from peer %d------=============", server)
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
+}
+
+func (rf *Raft) resetElecTimer() {
+	rf.electionTimer.Reset(getRandDuration())
 }
 
 type AppendEntriesArgs struct {
@@ -217,6 +223,7 @@ func (rf *Raft) Kill() {
 // recent saved state, if any. applyCh is a channel on which the
 // tester or service expects Raft to send ApplyMsg messages.
 //
+
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
@@ -225,17 +232,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 	rf.applyCh = applyCh
 
-	seed := time.Now().UnixNano()
-	rand.Seed(seed)
-	rf.electionDuration = time.Millisecond * time.Duration(10+rand.Intn(500)) // save the duration for resets
-	rf.electionTimer = time.NewTimer(rf.electionDuration)                     //create a random timer here
-
-	go func() {
-		<-rf.electionTimer.C
-		DPrintf("Timer 2 expired for Server %v", me)
-	}()
-
-	DPrintf("I am per # %v", rf.me)
+	rf.electionTimer = time.NewTimer(getRandDuration()) //create a random timer here
 
 	// Your initialization code here.
 	rf.commitIndex = 0
@@ -244,5 +241,39 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
+	replies := make(chan *RequestVoteReply, len(peers)-1)
+	go func() {
+		<-rf.electionTimer.C
+		DPrintf("Server %d called for a vote", rf.me)
+		rf.currentTerm++
+		rf.resetElecTimer()
+		args := RequestVoteArgs{rf.currentTerm, rf.me, rf.commitIndex, rf.lastApplied}
+		for peer, _ := range peers {
+			if peer != rf.me {
+				go func(i int) {
+					DPrintf("requesting vote with %v", args)
+					reply := &RequestVoteReply{}
+					ok := rf.sendRequestVote(i, args, reply)
+					DPrintf("Not okay %v", ok)
+					for ok != true {
+						ok = rf.sendRequestVote(i, args, reply)
+					}
+					replies <- reply
+				}(peer)
+			}
+		}
+	}()
+
+	select {
+	case reply := <-replies:
+		DPrintf("Reply is %v", reply)
+	}
 	return rf
+}
+
+func getRandDuration() time.Duration {
+	seed := time.Now().UnixNano()
+	rand.Seed(seed)
+	randDur := time.Millisecond * time.Duration(10+rand.Intn(500)) // save the duration for resets
+	return randDur
 }
