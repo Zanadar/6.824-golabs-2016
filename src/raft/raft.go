@@ -81,7 +81,9 @@ func (rf *Raft) GetState() (int, bool) {
 
 	var term int
 	var isleader bool
-	// Your code here.
+
+	term = rf.currentTerm
+	isleader = rf.isleader
 	return term, isleader
 }
 
@@ -144,11 +146,17 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	DPrintf("Vote request %v", args)
 	rf.resetElecTimer()
 	reply.Term = rf.currentTerm
-	if args.Term < rf.currentTerm {
+	DPrintf("my term is %d", rf.currentTerm)
+	if args.Term > rf.currentTerm {
+		rf.votedFor = args.CandidateID // updated who you last voted for
+		rf.currentTerm++
 		reply.VotedGranted = true
-		DPrintf("reply was %v", reply)
+	} else if (args.Term == rf.currentTerm) && args.LastLogIndex >= rf.commitIndex {
+		rf.votedFor = args.CandidateID
+		rf.currentTerm++
+		reply.VotedGranted = true
 	} else {
-		DPrintf("not voting")
+		reply.Term = rf.currentTerm
 	}
 	// Your code here.
 }
@@ -181,9 +189,52 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
+	Term    int
+	Success bool
 }
 
-func (rf *Raft) AppendEntries() {}
+func (rf *Raft) AppendEntries(args RequestVoteArgs, reply *RequestVoteReply) {
+	DPrintf("AppendEntries request %v", args)
+	rf.resetElecTimer()
+	DPrintf("my term is %d", rf.currentTerm)
+	// Your code here.
+}
+
+func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	return ok
+}
+
+func (rf *Raft) startHeartBeats() {
+	ticker := time.NewTicker(getRandDuration())
+	go func() {
+		for rf.isleader {
+			replies := make(chan *AppendEntriesReply, len(rf.peers)-1)
+			<-ticker.C
+			DPrintf("Heartbeat 💖")
+			args := AppendEntriesArgs{rf.currentTerm, rf.me, rf.commitIndex, rf.lastApplied}
+			for peer, _ := range rf.peers {
+				if peer != rf.me {
+					go func(i int) {
+						DPrintf("Send AppendEntries vote with %s", args)
+						reply := &AppendEntriesReply{}
+						ok := rf.sendAppendEntries(i, args, reply)
+						for ok != true {
+							DPrintf("Not okay %v", ok)
+							ok = rf.sendAppendEntries(i, args, reply)
+						}
+						replies <- reply
+					}(peer)
+				}
+			}
+			select {
+			case reply := <-replies:
+				DPrintf("Reply::::: %V", reply)
+
+			}
+		}
+	}()
+}
 
 //
 // the service using Raft (e.g. a k/v server) wants to start
@@ -251,7 +302,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		for peer, _ := range peers {
 			if peer != rf.me {
 				go func(i int) {
-					DPrintf("requesting vote with %v", args)
+					DPrintf("requesting vote with %s", args)
 					reply := &RequestVoteReply{}
 					ok := rf.sendRequestVote(i, args, reply)
 					for ok != true {
@@ -262,11 +313,26 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				}(peer)
 			}
 		}
-		select {
-		case reply := <-replies:
-			DPrintf("Reply is %v", reply)
+		votes := make([]bool, 0)
+		for i := 0; i < len(peers)-1; i++ {
+			reply := <-replies
+			DPrintf("Reply::::: %v", reply)
+			if reply.VotedGranted == true {
+				votes = append(votes, true)
+				DPrintf("Votes %t", votes)
+			}
+		}
+		votes = append(votes, true) // Server votes for itself
+		majority := (len(peers) - 1) / 2
+		if len(votes) >= majority {
+			rf.isleader = true
+			DPrintf("Leader elected")
+		} else {
+			DPrintf("No leader!")
 		}
 	}()
+
+	rf.startHeartBeats()
 
 	return rf
 }
