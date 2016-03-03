@@ -323,6 +323,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		clockEvent := <-rf.electionTimer.C
 		if rf.votedFor == -1 {
 			rf.resetElecTimer()
+			<-rf.resetCh
 			DPrintf("Clock event %v", clockEvent)
 			DPrintf("Server %d called for a vote		  ✏️✏️✏️✏️✏️✏️✏️✏️✏️✏️✏️✏️✏️✏️", rf.me)
 			rf.currentTerm++
@@ -341,25 +342,31 @@ func Make(peers []*labrpc.ClientEnd, me int,
 					}(peer)
 				}
 			}
-			votes := make([]bool, 0)
-			for i := 0; i < len(peers)-1; i++ {
-				reply := <-replies
-				// DPrintf("Vote		✏️✏️✏️✏️✏️✏️✏️✏️✏️✏️	 reply::::: %+v", reply)
-				if reply.VotedGranted == true {
-					votes = append(votes, true)
-				} else {
-					rf.currentTerm = reply.Term
+			select {
+			case <-rf.resetCh:
+				DPrintf("Reset!!!!!!!!!! %%%%%%%%%%%%%%%%%%%%%%%%%%%%%")
+				break
+			default:
+				votes := make([]bool, 0)
+				for i := 0; i < len(peers)-1; i++ {
+					reply := <-replies
+					// DPrintf("Vote		✏️✏️✏️✏️✏️✏️✏️✏️✏️✏️	 reply::::: %+v", reply)
+					if reply.VotedGranted == true {
+						votes = append(votes, true)
+					} else {
+						rf.currentTerm = reply.Term
+					}
 				}
-			}
-			votes = append(votes, true) // Server votes for itself
-			majority := (len(peers) - 1) / 2
-			if len(votes) >= majority {
-				rf.isleader = true
-				// DPrintf("👏👏👏👏👏👏👏👏👏👏👏👏👏👏👏👏		Leader elected")
-				rf.establishAuthority()
-				rf.startHeartBeats()
-			} else {
-				DPrintf("No leader!😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬")
+				votes = append(votes, true) // Server votes for itself
+				majority := (len(peers) - 1) / 2
+				if len(votes) >= majority {
+					rf.isleader = true
+					// DPrintf("👏👏👏👏👏👏👏👏👏👏👏👏👏👏👏👏		Leader elected")
+					rf.establishAuthority()
+					rf.startHeartBeats()
+				} else {
+					DPrintf("No leader!😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬")
+				}
 			}
 		}
 	}()
