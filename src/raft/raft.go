@@ -54,6 +54,7 @@ type Raft struct {
 	persister *Persister
 	me        int // index into peers[]
 	applyCh   chan ApplyMsg
+	resetCh   chan bool
 
 	electionDuration time.Duration
 	electionTimer    *time.Timer
@@ -175,6 +176,7 @@ func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *Request
 func (rf *Raft) resetElecTimer() {
 	dur := getRandDuration()
 	// DPrintf("Timer reset ⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲  on client %v timer is for %+v", rf.me, dur)
+	go func() { rf.resetCh <- true }()
 	rf.electionTimer.Reset(dur)
 }
 
@@ -304,6 +306,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.persister = persister
 	rf.me = me
 	rf.applyCh = applyCh
+	rf.resetCh = make(chan bool)
 	rf.votedFor = -1
 
 	rf.electionTimer = time.NewTimer(getRandDuration()) //create a random timer here
