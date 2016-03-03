@@ -145,34 +145,26 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	DPrintf("Vote request %+v", args)
-	rf.resetElecTimer()
 	reply.Term = rf.currentTerm
 	// DPrintf("my term is %d", rf.currentTerm)
 	if args.Term > rf.currentTerm {
 		rf.votedFor = args.CandidateID // updated who you last voted for
+		rf.resetElecTimer()
 		rf.currentTerm++
 		rf.isleader = false
 		reply.VotedGranted = true
 	} else if (args.Term == rf.currentTerm) && args.LastLogIndex >= rf.commitIndex {
 		rf.votedFor = args.CandidateID
+		rf.resetElecTimer()
 		rf.isleader = false
 		rf.currentTerm++
 		reply.VotedGranted = true
 	} else {
 		reply.Term = rf.currentTerm
+		rf.votedFor = -1
 	}
-	// Your code here.
 }
 
-//
-// example code to send a RequestVote RPC to a server.
-// server is the index of the target server in rf.peers[].
-// expects RPC arguments in args.
-// fills in *reply with RPC reply, so caller should probably
-// pass &reply.
-//
-// returns true if labrpc says the RPC was delivered.
-//
 func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *RequestVoteReply) bool {
 	rf.resetElecTimer()
 	// DPrintf("Vote requested from peer %d------=============", server)
@@ -182,7 +174,7 @@ func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *Request
 
 func (rf *Raft) resetElecTimer() {
 	dur := getRandDuration()
-	DPrintf("Timer reset ⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲  on client %v timer is for %+v", rf.me, dur)
+	// DPrintf("Timer reset ⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲  on client %v timer is for %+v", rf.me, dur)
 	rf.electionTimer.Reset(dur)
 }
 
