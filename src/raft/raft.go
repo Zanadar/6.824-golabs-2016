@@ -26,7 +26,7 @@ import (
 	"time"
 )
 
-const baseTime = 150
+const baseTime = 450
 
 //
 // as each Raft peer becomes aware that successive log entries are
