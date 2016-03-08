@@ -55,6 +55,7 @@ type Raft struct {
 	me        int // index into peers[]
 	applyCh   chan ApplyMsg
 	resetCh   chan bool
+	killCh    chan bool
 
 	electionDuration time.Duration
 	electionTimer    *time.Timer
@@ -85,8 +86,10 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var IsLeader bool
 
+	rf.mu.Lock()
 	term = rf.currentTerm
 	IsLeader = rf.IsLeader
+	rf.mu.Unlock()
 	return term, IsLeader
 }
 
@@ -146,6 +149,8 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	DPrintf("Vote request %+v", args)
+	// rf.mu.Lock()
+	// defer rf.mu.Unlock()
 	reply.Term = rf.currentTerm
 	// DPrintf("my term is %d", rf.currentTerm)
 	if args.Term < rf.currentTerm {
@@ -157,6 +162,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 		rf.IsLeader = false
 		reply.VotedGranted = true
 	}
+	return
 }
 
 func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *RequestVoteReply) bool {
@@ -167,6 +173,8 @@ func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *Request
 }
 
 func (rf *Raft) resetElecTimer() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	dur := getRandDuration()
 	// DPrintf("Timer reset ⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲⏲  on client %v timer is for %+v", rf.me, dur)
 	rf.electionTimer.Reset(dur)
@@ -188,16 +196,18 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	DPrintf("AppendEntries request %+v", args)
 	if args.Term >= rf.currentTerm {
 		rf.resetElecTimer()
+		rf.mu.Lock()
 		go func() { rf.resetCh <- true }()
 		rf.currentTerm = args.Term
 		reply.Term = rf.currentTerm
 		rf.votedFor = -1
 		reply.Success = true
 		rf.IsLeader = false
+		rf.mu.Unlock()
 	} else {
 		reply.Term = rf.currentTerm
 	}
-	// Your code here.
+	return
 }
 
 func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -290,8 +300,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 // turn off debug output from this instance.
 //
 func (rf *Raft) Kill() {
+	rf.mu.Lock()
 	rf.IsLeader = false
+	rf.mu.Unlock()
 	DPrintf("Killed 🔫🔫🔫🔫🔫🔫🔫🔫🔫🔫🔫         %+v", rf.me)
+	return
 }
 
 //
@@ -327,11 +340,15 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		for {
 			<-rf.electionTimer.C
 			select {
+			case <-rf.killCh:
+				break
 			case <-rf.resetCh:
 				DPrintf("Reset!!!!!!!!!! 😡😡😡😡😡😡😡😡😡😡😡    on peer %+v", rf.me)
 			default:
+				rf.mu.Lock()
 				rf.IsLeader = false
 				rf.currentTerm++
+				rf.mu.Unlock()
 				DPrintf("Server %d called for a vote		  ✏️✏️✏️✏️✏️✏️✏️✏️✏️✏️✏️✏️✏️✏️", rf.me)
 				args := RequestVoteArgs{rf.currentTerm, rf.me, rf.commitIndex, rf.lastApplied}
 				for peer, _ := range peers {
@@ -363,7 +380,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				rf.votedFor = rf.me
 				majority := (len(peers) - 1) / 2
 				if len(votes) >= majority {
+					rf.mu.Lock()
 					rf.IsLeader = true
+					rf.mu.Unlock()
 					DPrintf("👏👏👏👏👏👏👏👏👏👏👏👏👏👏👏👏		Leader elected its term is %v", rf.currentTerm)
 					rf.establishAuthority()
 					rf.startHeartBeats()
@@ -373,6 +392,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			}
 			rf.resetElecTimer()
 		}
+		return
 	}()
 
 	return rf
