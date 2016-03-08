@@ -156,12 +156,12 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	if args.Term < rf.currentTerm {
 		reply.VotedGranted = false
 		reply.Term = rf.currentTerm
-	} else if rf.votedFor == -1 || rf.votedFor == args.CandidateID {
+	} else if rf.votedFor == -1 {
+		rf.currentTerm = args.Term
 		rf.votedFor = args.CandidateID // updated who you last voted for
-		rf.resetElecTimer()
-		rf.IsLeader = false
 		reply.VotedGranted = true
 	}
+	rf.resetElecTimer()
 	return
 }
 
@@ -195,14 +195,13 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
 	DPrintf("AppendEntries request %+v", args)
 	if args.Term >= rf.currentTerm {
-		rf.resetElecTimer()
 		rf.mu.Lock()
 		go func() { rf.resetCh <- true }()
 		rf.currentTerm = args.Term
 		reply.Term = rf.currentTerm
 		rf.votedFor = -1
 		reply.Success = true
-		rf.IsLeader = false
+		// rf.IsLeader = false
 		rf.mu.Unlock()
 	} else {
 		reply.Term = rf.currentTerm
@@ -213,6 +212,59 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	return ok
+}
+
+func (rf *Raft) handleVoting() {
+	replies := make(chan *RequestVoteReply, len(rf.peers)-1)
+	for {
+		<-rf.electionTimer.C
+		select {
+		case <-rf.killCh:
+			return
+		case <-rf.resetCh:
+			DPrintf("Reset!!!!!!!!!! 😡😡😡😡😡😡😡😡😡😡😡    on peer %+v", rf.me)
+		default:
+			rf.mu.Lock()
+			rf.IsLeader = false
+			rf.currentTerm++
+			rf.mu.Unlock()
+			DPrintf("Server %d called for a vote		  ✏️✏️✏️✏️✏️✏️✏️✏️✏️✏️✏️✏️✏️✏️", rf.me)
+			args := RequestVoteArgs{rf.currentTerm, rf.me, rf.commitIndex, rf.lastApplied}
+			for peer, _ := range rf.peers {
+				if peer != rf.me {
+					go func(i int) {
+						reply := &RequestVoteReply{}
+						ok := rf.sendRequestVote(i, args, reply)
+						DPrintf("okay:::::::: %+v", ok)
+						replies <- reply
+					}(peer)
+				}
+			}
+			votes := make([]bool, 0)
+			for i := 0; i < len(rf.peers)-1; i++ {
+				reply := <-replies
+				if reply.VotedGranted == true {
+					votes = append(votes, true)
+				} else {
+				}
+			}
+			votes = append(votes, true) // Server votes for itself
+			rf.votedFor = rf.me
+			majority := (len(rf.peers) - 1) / 2
+			if len(votes) >= majority {
+				rf.mu.Lock()
+				rf.IsLeader = true
+				rf.mu.Unlock()
+				DPrintf("👏👏👏👏👏👏👏👏👏👏👏👏👏👏👏👏		Leader elected its term is %v", rf.currentTerm)
+				rf.establishAuthority()
+				rf.startHeartBeats()
+			} else {
+				DPrintf("No leader!😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬")
+			}
+			rf.resetElecTimer()
+		}
+	}
+	return
 }
 
 func (rf *Raft) establishAuthority() {
@@ -242,31 +294,27 @@ func (rf *Raft) establishAuthority() {
 }
 func (rf *Raft) startHeartBeats() {
 	replies := make(chan *AppendEntriesReply, len(rf.peers)-1)
-	for {
+	for rf.IsLeader {
 		timeout := <-rf.electionTimer.C
-		if rf.IsLeader {
-			DPrintf("%+v (%+v) Sent a Regular Heartbeat 💖💖💖💖💖💖💖💖💖💖💖💖💖 at %+v", rf.me, rf.IsLeader,
-				timeout)
-			args := AppendEntriesArgs{rf.currentTerm, rf.me, rf.commitIndex, rf.lastApplied}
-			for peer, _ := range rf.peers {
-				if peer != rf.me {
-					go func(i int) {
-						reply := &AppendEntriesReply{}
-						ok := rf.sendAppendEntries(i, args, reply)
-						if ok != true {
-							DPrintf("okay %+v ----------  😱   sent: %+v, got: %+v", ok, args, reply)
-							// ok = rf.sendAppendEntries(i, args, reply)
-						}
-						replies <- reply
-					}(peer)
-				}
+		DPrintf("%+v (%+v) Sent a Regular Heartbeat 💖💖💖💖💖💖💖💖💖💖💖💖💖 at %+v", rf.me, rf.IsLeader,
+			timeout)
+		args := AppendEntriesArgs{rf.currentTerm, rf.me, rf.commitIndex, rf.lastApplied}
+		for peer, _ := range rf.peers {
+			if peer != rf.me {
+				func(i int) {
+					reply := &AppendEntriesReply{}
+					ok := rf.sendAppendEntries(i, args, reply)
+					if ok != true {
+						DPrintf("okay %+v ----------  😱   sent: %+v, got: %+v", ok, args, reply)
+						// ok = rf.sendAppendEntries(i, args, reply)
+					}
+					replies <- reply
+					return
+				}(peer)
 			}
-			for i := 0; i < len(replies); i++ {
-				<-replies
-			}
-		} else {
-			DPrintf("Im not the boss +++++++++++++++++++++!!!!!!!!!!!!!!!")
-			break
+		}
+		for i := 0; i < len(replies); i++ {
+			<-replies
 		}
 		rf.resetElecTimer()
 	}
@@ -302,8 +350,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) Kill() {
 	rf.mu.Lock()
 	rf.IsLeader = false
+	rf.currentTerm = 0
 	rf.mu.Unlock()
 	DPrintf("Killed 🔫🔫🔫🔫🔫🔫🔫🔫🔫🔫🔫         %+v", rf.me)
+	go func() { rf.killCh <- true }()
 	return
 }
 
@@ -335,65 +385,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
-	replies := make(chan *RequestVoteReply, len(peers)-1)
-	go func() {
-		for {
-			<-rf.electionTimer.C
-			select {
-			case <-rf.killCh:
-				break
-			case <-rf.resetCh:
-				DPrintf("Reset!!!!!!!!!! 😡😡😡😡😡😡😡😡😡😡😡    on peer %+v", rf.me)
-			default:
-				rf.mu.Lock()
-				rf.IsLeader = false
-				rf.currentTerm++
-				rf.mu.Unlock()
-				DPrintf("Server %d called for a vote		  ✏️✏️✏️✏️✏️✏️✏️✏️✏️✏️✏️✏️✏️✏️", rf.me)
-				args := RequestVoteArgs{rf.currentTerm, rf.me, rf.commitIndex, rf.lastApplied}
-				for peer, _ := range peers {
-					if peer != rf.me {
-						go func(i int) {
-							// DPrintf("requesting vote with %+v	   ✏️✏️✏️✏️✏️✏️✏️✏️", args)
-							reply := &RequestVoteReply{}
-							ok := rf.sendRequestVote(i, args, reply)
-							DPrintf("okay:::::::: %+v", ok)
-							// for ok != true {
-							// DPrintf("Not okay %v", ok)
-							// ok = rf.sendRequestVote(i, args, reply)
-							// }
-							replies <- reply
-						}(peer)
-					}
-				}
-				votes := make([]bool, 0)
-				for i := 0; i < len(peers)-1; i++ {
-					reply := <-replies
-					// DPrintf("Vote		✏️✏️✏️✏️✏️✏️✏️✏️✏️✏️	 reply::::: %+v", reply)
-					if reply.VotedGranted == true {
-						votes = append(votes, true)
-					} else {
-						// rf.currentTerm = reply.Term
-					}
-				}
-				votes = append(votes, true) // Server votes for itself
-				rf.votedFor = rf.me
-				majority := (len(peers) - 1) / 2
-				if len(votes) >= majority {
-					rf.mu.Lock()
-					rf.IsLeader = true
-					rf.mu.Unlock()
-					DPrintf("👏👏👏👏👏👏👏👏👏👏👏👏👏👏👏👏		Leader elected its term is %v", rf.currentTerm)
-					rf.establishAuthority()
-					rf.startHeartBeats()
-				} else {
-					DPrintf("No leader!😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬")
-				}
-			}
-			rf.resetElecTimer()
-		}
-		return
-	}()
+	go rf.handleVoting()
 
 	return rf
 }
