@@ -172,9 +172,9 @@ func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *Request
 
 func (rf *Raft) resetElecTimer() {
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	rf.electionTimer.Stop()
 	rf.electionTimer = time.NewTicker(getRandDuration(true))
+	rf.mu.Unlock()
 }
 
 type AppendEntriesArgs struct {
@@ -258,21 +258,18 @@ func (rf *Raft) holdVote() {
 		rf.mu.Lock()
 		DPrintf("No leader!😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬")
 	}
-	<-rf.electionTimer.C
 }
 
 func (rf *Raft) handleVoting() {
 	for {
-		t := <-rf.electionTimer.C
-		select {
-		case <-rf.killCh:
-			DPrintf("KIlled")
-			return
-		case <-rf.resetCh:
-			DPrintf("Reset!!!!!!!!!! 😡😡😡😡😡😡😡😡😡😡😡    on peer %+v", rf.me)
-		default:
+		DPrintf("BEFORE")
+		rf.mu.Lock()
+		leader := rf.IsLeader
+		rf.mu.Unlock()
+		if !leader {
+			t := <-rf.electionTimer.C
 			DPrintf("time up ⏲  at %v on %v", t, rf.me)
-			go rf.holdVote()
+			rf.holdVote()
 		}
 	}
 }
@@ -280,7 +277,7 @@ func (rf *Raft) handleVoting() {
 func (rf *Raft) startHeartBeats() {
 	replies := make(chan *AppendEntriesReply, len(rf.peers)-1)
 	for {
-		rf.resetElecTimer()
+		// rf.resetElecTimer()
 		timeout := <-rf.heartbeat.C
 		if rf.IsLeader {
 			DPrintf("%+v (%+v) Sent a Regular Heartbeat 💖💖💖💖💖💖💖💖💖💖💖💖💖 at %+v", rf.me, rf.IsLeader,
