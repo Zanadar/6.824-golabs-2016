@@ -26,7 +26,7 @@ import (
 	"time"
 )
 
-const baseTime = 375
+const baseTime = 175
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -65,6 +65,7 @@ type Raft struct {
 	currentTerm int // increases monotonically
 	votedFor    int
 	log         []LogEntry //maybe create a LogEntry struct?
+	killed      bool
 
 	//Volatile state on all servers
 	commitIndex int // index of Highest entry known to be committed (initialize at zero)
@@ -150,19 +151,20 @@ type RequestVoteReply struct {
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
-	DPrintf("Vote request %+v", args)
-	reply.Term = rf.currentTerm
-	if args.Term < rf.currentTerm {
-		reply.VotedGranted = false
-		reply.Term = rf.currentTerm
-	} else if rf.votedFor == -1 {
-		rf.mu.Lock()
-		// rf.currentTerm = args.Term
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
 		rf.votedFor = args.CandidateID // updated who you last voted for
 		rf.IsLeader = false
-		rf.mu.Unlock()
 		reply.VotedGranted = true
+		go func() { rf.resetCh <- true }()
+	} else {
+		reply.VotedGranted = false
+		reply.Term = rf.currentTerm
 	}
+	reply.Term = rf.currentTerm
+	DPrintf("Vote request %+v", args, reply)
 	return
 }
 
@@ -187,12 +189,15 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
 	DPrintf("AppendEntries request %+v received by %+v", args, rf.me)
 	reply.Term = rf.currentTerm
-	if args.Term > rf.currentTerm {
-		go func() { rf.resetCh <- true }()
+	if args.Term >= rf.currentTerm {
+		go func() {
+			rf.resetCh <- true
+		}()
 		rf.mu.Lock()
 		rf.lastContact = time.Now()
 		rf.IsLeader = false
 		rf.currentTerm = args.Term
+		DPrintf("Current term is %v", rf.currentTerm)
 		reply.Success = true
 		rf.mu.Unlock()
 	} else {
@@ -218,6 +223,7 @@ func (rf *Raft) holdVote() <-chan *voteResult {
 	rf.mu.Lock()
 	rf.IsLeader = false
 	rf.currentTerm++
+	DPrintf("Incremented term to %v", rf.currentTerm)
 	rf.mu.Unlock()
 	votes := make([]*RequestVoteReply, 0)
 	tally := 1 // server votes for itself
@@ -225,11 +231,12 @@ func (rf *Raft) holdVote() <-chan *voteResult {
 	args := RequestVoteArgs{rf.currentTerm, rf.me, rf.commitIndex, rf.lastApplied}
 	for peer, _ := range rf.peers {
 		if peer != rf.me {
-			go func(i int) {
+			func(i int) {
 				reply := &RequestVoteReply{}
 				ok := rf.sendRequestVote(i, args, reply)
 				DPrintf("Vote reply okay:::::::: %+v", reply)
 				for !ok {
+					<-time.After(100 * time.Millisecond)
 					ok = rf.sendRequestVote(i, args, reply)
 				}
 				replies <- reply
@@ -265,18 +272,25 @@ func (rf *Raft) holdVote() <-chan *voteResult {
 func (rf *Raft) handleVoting() {
 	electionTime := randomTimeout(rf.electionTime)
 	//TODO call holdVote (which returns a channel of votes) and drain that channel in a case below
-	rf.mu.Lock()
-	leader := rf.IsLeader
-	rf.mu.Unlock()
-	for !leader {
+	for {
 		select {
+		case <-rf.killCh:
+			return
 		case <-rf.resetCh:
-			DPrintf("RESET!!!!!!!!!!")
+			DPrintf("Reset on %v", rf.me)
+			electionTime = randomTimeout(rf.electionTime)
+			continue
 		case t := <-electionTime:
-			if !leader {
-				DPrintf("time up ⏲  at %v on %v", t, rf.me)
-				rf.holdVote()
+			if rf.killed {
+				DPrintf("Killed")
+				return
 			}
+			electionTime = randomTimeout(rf.electionTime)
+			// rf.mu.Lock()
+			// voted := rf.votedFor
+			// rf.mu.Unlock()
+			DPrintf("time up ⏲  at %v on %v", t, rf.me)
+			rf.holdVote()
 		}
 	}
 }
@@ -287,31 +301,37 @@ func (rf *Raft) startHeartBeats() {
 	for {
 		// rf.resetElecTimer()
 		select {
+		case <-rf.killCh:
+			DPrintf("Killed")
+			return
 		case <-timeout:
-			if rf.IsLeader {
-				DPrintf("%+v (%+v) Sent a Regular Heartbeat 💖💖💖💖💖💖💖💖💖💖💖💖💖 at %+v", rf.me, rf.IsLeader,
-					timeout)
-				rf.mu.Lock()
-				args := AppendEntriesArgs{rf.currentTerm, rf.me, rf.commitIndex, rf.lastApplied}
-				rf.mu.Unlock()
-				for peer, _ := range rf.peers {
-					if peer != rf.me {
-						go func(i int) {
-							reply := &AppendEntriesReply{}
-							ok := rf.sendAppendEntries(i, args, reply)
-							if ok != true {
-								DPrintf("okay %+v ----------  😱   sent: %+v, got: %+v", ok, args, reply)
-								// ok = rf.sendAppendEntries(i, args, reply)
-							}
-							replies <- reply
-						}(peer)
-					}
-				}
-				for i := 0; i < len(replies); i++ {
-					<-replies
+			for peer, _ := range rf.peers {
+				if peer != rf.me {
+					rf.mu.Lock()
+					leader := rf.IsLeader
+					args := AppendEntriesArgs{rf.currentTerm, rf.me, rf.commitIndex, rf.lastApplied}
+					rf.mu.Unlock()
+					go func(i int, callme chan *AppendEntriesReply) {
+						if rf.killed == true {
+							return
+							DPrintf("Leader status: %v", leader)
+						}
+
+						DPrintf("%+v (%+v) Sent a Regular Heartbeat 💖💖💖💖💖💖💖💖💖💖💖💖💖 at %+v", rf.me, rf.IsLeader, timeout)
+						reply := &AppendEntriesReply{}
+						ok := rf.sendAppendEntries(i, args, reply)
+						if ok != true {
+							DPrintf("okay %+v ----------  😱   sent: %+v, got: %+v", ok, args, reply)
+							// ok = rf.sendAppendEntries(i, args, reply)
+						}
+						callme <- reply
+						return
+					}(peer, replies)
 				}
 			}
+			rf.mu.Lock()
 			timeout = randomTimeout(rf.heartbeatTime)
+			rf.mu.Unlock()
 		}
 	}
 }
@@ -344,12 +364,15 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 // turn off debug output from this instance.
 //
 func (rf *Raft) Kill() {
+	const Debug = 0
+	DPrintf("Killed 🔫🔫🔫🔫🔫🔫🔫🔫🔫🔫🔫         %+v", rf.me)
 	rf.mu.Lock()
 	rf.IsLeader = false
-	rf.currentTerm = 0
+	rf.killed = true
 	rf.mu.Unlock()
-	DPrintf("Killed 🔫🔫🔫🔫🔫🔫🔫🔫🔫🔫🔫         %+v", rf.me)
-	go func() { rf.killCh <- true }()
+	for _ = range rf.peers {
+		go func() { rf.killCh <- true }()
+	}
 	return
 }
 
