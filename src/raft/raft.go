@@ -205,7 +205,14 @@ func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs, reply *App
 	return ok
 }
 
-func (rf *Raft) holdVote() {
+type voteResult struct {
+	RequestVoteReply
+	voter string
+}
+
+func (rf *Raft) holdVote() <-chan *voteResult {
+	respCh := make(chan *voteResult, len(rf.peers))
+	// TODO Pupoluate the ^^ with votes
 	replies := make(chan *RequestVoteReply, len(rf.peers)-1)
 	DPrintf("Server %d called for a vote		  ✏️✏️✏️✏️✏️✏️✏️✏️✏️✏️✏️✏️✏️✏️", rf.me)
 	rf.mu.Lock()
@@ -252,19 +259,20 @@ func (rf *Raft) holdVote() {
 		rf.mu.Lock()
 		DPrintf("No leader!😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬😬")
 	}
+	return respCh
 }
 
 func (rf *Raft) handleVoting() {
 	electionTime := randomTimeout(rf.electionTime)
-	for {
-		DPrintf("BEFORE")
+	//TODO call holdVote (which returns a channel of votes) and drain that channel in a case below
+	rf.mu.Lock()
+	leader := rf.IsLeader
+	rf.mu.Unlock()
+	for !leader {
 		select {
 		case <-rf.resetCh:
 			DPrintf("RESET!!!!!!!!!!")
 		case t := <-electionTime:
-			rf.mu.Lock()
-			leader := rf.IsLeader
-			rf.mu.Unlock()
 			if !leader {
 				DPrintf("time up ⏲  at %v on %v", t, rf.me)
 				rf.holdVote()
