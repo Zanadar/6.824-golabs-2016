@@ -19,8 +19,13 @@ package raft
 
 import (
 	"labrpc"
+	"math/rand"
 	"sync"
-	"sync/atomic"
+	"time"
+)
+
+const (
+	basetime = 175
 )
 
 // import "bytes"
@@ -42,13 +47,18 @@ type ApplyMsg struct {
 // A Go object implementing a single Raft peer.
 //
 type Raft struct {
-	mu    sync.RWMutex
-	title uint64 //atomic counter
-	term  int    //atomic counter
+	mu          sync.RWMutex
+	role        uint64 //atomic
+	currentTerm int    //atomic counter
 
 	peers     []*labrpc.ClientEnd
 	persister *Persister
 	me        int // index into peers[]
+
+	electionTimeout  time.Duration
+	heartbeatTimeout time.Duration
+
+	heartBeatChan chan bool
 
 	// Your data here.
 	// Look at the paper's Figure 2 for a description of what
@@ -59,67 +69,149 @@ type Raft struct {
 func (rf *Raft) isLeader() (isLeader bool) {
 	rf.mu.RLock()
 	defer rf.mu.RUnlock()
-	isLeader = rf.title == 2
+	isLeader = rf.role == 2
 	return
 }
 
 func (rf *Raft) isCandidate() (isCandidate bool) {
 	rf.mu.RLock()
 	defer rf.mu.RUnlock()
-	isCandidate = rf.title == 1
+	isCandidate = rf.role == 1
 	return
 }
 
 func (rf *Raft) isFollower() (isFollower bool) {
 	rf.mu.RLock()
 	defer rf.mu.RUnlock()
-	isFollower = rf.title == 0
+	isFollower = rf.role == 0
 	return
 }
 
 func (rf *Raft) makeLeader() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	rf.title = 2
+	rf.role = 2
 	return
 }
 
 func (rf *Raft) makeCandidate() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	rf.title = 1
+	rf.role = 1
 	return
 }
 
 func (rf *Raft) makeFollower() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	rf.title = 0
+	rf.role = 0
 	return
 }
 
 func (rf *Raft) incTerm() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	rf.term++
+	rf.currentTerm++
+	return
+}
+
+func (rf *Raft) decTerm() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.currentTerm--
+	return
+}
+
+func (rf *Raft) setTerm(term int) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.currentTerm = term
 	return
 }
 
 func (rf *Raft) getTerm() (term int) {
 	rf.mu.RLock()
 	defer rf.mu.RUnlock()
-	term = rf.term
+	term = rf.currentTerm
 	return
 }
 
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-
 	term := rf.getTerm()
 	isLeader := rf.isLeader()
 	// Your code here.
 	return term, isLeader
+}
+
+// This is our main loop. It checks the state of the peer and drops down into the applicable loop
+func (rf *Raft) run() {
+	for {
+		switch {
+		case rf.isFollower():
+			rf.runFollower()
+		case rf.isCandidate():
+			rf.runCandidate()
+		case rf.isLeader():
+			rf.runLeader()
+		}
+	}
+}
+
+func (rf *Raft) runFollower() {
+	electionTimeout := randomTimeout(rf.electionTimeout)
+
+	select {
+	case <-electionTimeout:
+		DPrintf("⏲ follower %v election timed out", rf.me)
+		rf.makeCandidate()
+		return
+	case <-rf.heartBeatChan:
+		DPrintf("💖 follower %v received heartbeat", rf.me)
+		return
+	}
+}
+
+func (rf *Raft) runCandidate() {
+	electionTimeout := randomTimeout(rf.electionTimeout)
+	rf.incTerm()
+	votes := rf.sendVotes()
+
+	select {
+	case <-rf.heartBeatChan:
+		DPrintf("💖 Candidate %v received heartbeat", rf.me)
+		rf.makeFollower()
+		return
+	case <-electionTimeout:
+		DPrintf("⏲ Candidate %v election timed out", rf.me)
+		return
+	case vote := <-votes:
+		DPrintf("✏️ Candidate %v recieved votes ", rf.me)
+		DPrintf("✏️ Candidate %v recieved vote ", vote)
+		rf.makeLeader()
+		return
+	}
+}
+
+func (rf *Raft) sendVotes() (votes chan RequestVoteReply) {
+	resp := make(chan RequestVoteReply)
+	resp <- RequestVoteReply{}
+	return resp
+}
+
+func (rf *Raft) runLeader() {
+	heartbeatTimeout := randomTimeout(rf.heartbeatTimeout)
+
+	select {
+	case <-heartbeatTimeout:
+		DPrintf("⏲ Leader %v sent heartbeat", rf.me)
+		return
+	case <-rf.heartBeatChan:
+		DPrintf("💖 Candidate %v received heartbeat", rf.me)
+		rf.makeFollower()
+		return
+	}
 }
 
 //
@@ -231,10 +323,24 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.persister = persister
 	rf.me = me
 
+	rf.heartbeatTimeout = basetime * time.Millisecond
+	rf.electionTimeout = 2 * basetime * time.Millisecond
+	rf.makeFollower()
+
 	// Your initialization code here.
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
+	go rf.run()
+
 	return rf
+}
+
+func randomTimeout(minVal time.Duration) <-chan time.Time {
+	if minVal == 0 {
+		return nil
+	}
+	extra := (time.Duration(rand.Int63()) % minVal)
+	return time.After(minVal + extra)
 }
