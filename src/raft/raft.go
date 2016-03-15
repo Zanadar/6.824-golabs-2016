@@ -19,13 +19,12 @@ package raft
 
 import (
 	"labrpc"
-	"math/rand"
 	"sync"
 	"time"
 )
 
 const (
-	basetime = 275
+	basetime = 175
 )
 
 // import "bytes"
@@ -193,17 +192,35 @@ func (rf *Raft) runCandidate() {
 		DPrintf("⏲ Candidate %v election timed out", rf.me)
 		return
 	case vote := <-votes:
-		DPrintf("✏️ Candidate %v recieved votes ", rf.me)
-		DPrintf("✏️ Candidate %v recieved vote ", vote)
+		DPrintf("✏️ Candidate %v recieved vote: %+v ", rf.me, vote)
 		rf.makeLeader()
 		return
 	}
 }
 
-func (rf *Raft) sendVotes() (votes chan RequestVoteReply) {
-	resp := make(chan RequestVoteReply)
-	go func() { resp <- RequestVoteReply{} }()
-	return resp
+func (rf *Raft) sendVotes() (votes chan *RequestVoteReply) {
+	others := exclude(rf.peers, rf.me)
+	votes = make(chan *RequestVoteReply, len(others))
+	request := rf.makeVoteRequest()
+	for _, v := range others {
+		go func(v int) {
+			DPrintf("Requesting vote with: %+v", request)
+			reply := &RequestVoteReply{}
+			rf.sendRequestVote(v, request, reply)
+			votes <- reply
+		}(v)
+	}
+	return votes
+}
+
+func (rf *Raft) makeVoteRequest() RequestVoteArgs {
+	rf.mu.RLock()
+	defer rf.mu.RUnlock()
+	request := RequestVoteArgs{"Ping"}
+
+	DPrintf("Request constructed: %+v", request)
+
+	return request
 }
 
 func (rf *Raft) runLeader() {
@@ -211,7 +228,7 @@ func (rf *Raft) runLeader() {
 
 	select {
 	case <-heartbeatTimeout:
-		DPrintf("⏲ Leader %v sent heartbeat", rf.me)
+		DPrintf("⏲ 💖Leader %v sent heartbeat", rf.me)
 		rf.makeFollower()
 		return
 	case <-rf.heartBeatChan:
@@ -253,20 +270,22 @@ func (rf *Raft) readPersist(data []byte) {
 // example RequestVote RPC arguments structure.
 //
 type RequestVoteArgs struct {
-	// Your data here.
+	Test string
 }
 
 //
 // example RequestVote RPC reply structure.
 //
 type RequestVoteReply struct {
-	// Your data here.
+	Test string
 }
 
 //
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
+	reply.Test = "Pong"
+	DPrintf("🎉 Got a vote request %+v. Replied: %+v", args, reply)
 	// Your code here.
 }
 
@@ -342,12 +361,4 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	go rf.run()
 
 	return rf
-}
-
-func randomTimeout(minVal time.Duration) <-chan time.Time {
-	if minVal == 0 {
-		return nil
-	}
-	extra := (time.Duration(rand.Int63()) % minVal)
-	return time.After(minVal + extra)
 }
