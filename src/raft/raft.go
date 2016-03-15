@@ -25,7 +25,7 @@ import (
 )
 
 const (
-	basetime = 175
+	basetime = 275
 )
 
 // import "bytes"
@@ -150,11 +150,17 @@ func (rf *Raft) run() {
 	for {
 		switch {
 		case rf.isFollower():
+			DPrintf("👍🏻Follower state it on %v", rf.me)
 			rf.runFollower()
+			continue
 		case rf.isCandidate():
+			DPrintf("✋ Candidate state hit on %v", rf.me)
 			rf.runCandidate()
+			continue
 		case rf.isLeader():
+			DPrintf("💪 leader state hit on %v", rf.me)
 			rf.runLeader()
+			continue
 		}
 	}
 }
@@ -196,7 +202,7 @@ func (rf *Raft) runCandidate() {
 
 func (rf *Raft) sendVotes() (votes chan RequestVoteReply) {
 	resp := make(chan RequestVoteReply)
-	resp <- RequestVoteReply{}
+	go func() { resp <- RequestVoteReply{} }()
 	return resp
 }
 
@@ -206,6 +212,7 @@ func (rf *Raft) runLeader() {
 	select {
 	case <-heartbeatTimeout:
 		DPrintf("⏲ Leader %v sent heartbeat", rf.me)
+		rf.makeFollower()
 		return
 	case <-rf.heartBeatChan:
 		DPrintf("💖 Candidate %v received heartbeat", rf.me)
