@@ -233,17 +233,19 @@ func (rf *Raft) countVotes(votes chan *RequestVoteReply) (result chan bool) {
 	result = make(chan bool, 1)
 	go func(send chan bool) {
 		for {
+			DPrintf("Tally is %v", tally)
+			if tally == rf.majority {
+				DPrintf("🎈 Election quorum on %v", rf.me)
+				send <- true
+				return
+			}
 			select {
 			case vote := <-votes:
-				if tally >= rf.majority {
-					DPrintf("🎈 Election quorum on %v", rf.me)
-					send <- true
-					return
-				}
 				if vote.VoteGranted {
 					DPrintf("✏️Counting votes on %v", rf.me)
 					tally++
 				}
+				DPrintf("Tally is %v", tally)
 			}
 		}
 	}(result)
@@ -435,7 +437,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
-	rf.majority = (len(peers)/2 - 1)
+	rf.majority = (len(rf.peers)/2 + 1)
 
 	rf.heartbeatTimeout = basetime * time.Millisecond
 	rf.electionTimeout = 2 * basetime * time.Millisecond
