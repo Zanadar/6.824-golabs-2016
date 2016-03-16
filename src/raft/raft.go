@@ -54,6 +54,8 @@ type Raft struct {
 	persister *Persister
 	me        int // index into peers[]
 
+	majority int
+
 	electionTimeout  time.Duration
 	heartbeatTimeout time.Duration
 
@@ -182,23 +184,33 @@ func (rf *Raft) runCandidate() {
 	electionTimeout := randomTimeout(rf.electionTimeout)
 	rf.incTerm()
 	votes := rf.sendVotes()
+	voteChan := make(chan *RequestVoteReply, len(rf.peers))
+	election := rf.countVotes(voteChan)
 
-	select {
-	case <-rf.heartBeatChan:
-		DPrintf("💖 Candidate %v received heartbeat", rf.me)
-		rf.makeFollower()
-		return
-	case <-electionTimeout:
-		DPrintf("⏲ Candidate %v election timed out", rf.me)
-		return
-	case vote := <-votes:
-		DPrintf("✏️ Candidate %v recieved vote: %+v ", rf.me, vote)
-		rf.makeLeader()
-		return
+	for {
+		DPrintf("✋ Outside runCandidate loop on %v", rf.me)
+		select {
+		case <-rf.heartBeatChan:
+			DPrintf("💖 Candidate %v received heartbeat", rf.me)
+			rf.makeFollower()
+			return
+		case <-electionTimeout:
+			DPrintf("⏲ Candidate %v election timed out", rf.me)
+			return
+		case vote := <-votes:
+			DPrintf("✏️ Candidate %v recieved vote: %+v ", rf.me, vote)
+			voteChan <- vote
+			continue
+		case <-election:
+			DPrintf("👺 I'm the boss %v", rf.me)
+			rf.makeLeader()
+			return
+		}
 	}
 }
 
 func (rf *Raft) sendVotes() (votes chan *RequestVoteReply) {
+	// Vote for yourself
 	others := exclude(rf.peers, rf.me)
 	votes = make(chan *RequestVoteReply, len(others))
 	request := rf.makeVoteRequest()
@@ -206,13 +218,38 @@ func (rf *Raft) sendVotes() (votes chan *RequestVoteReply) {
 		go func(v int) {
 			DPrintf("Requesting vote with: %+v", request)
 			reply := &RequestVoteReply{}
+			now := time.Now()
 			rf.sendRequestVote(v, request, reply)
 			votes <- reply
+			diff := time.Since(now)
+			DPrintf("Request took, %+v", diff)
 		}(v)
 	}
 	return votes
 }
 
+func (rf *Raft) countVotes(votes chan *RequestVoteReply) (result chan bool) {
+	tally := 0
+	result = make(chan bool, 1)
+	go func(send chan bool) {
+		for {
+			select {
+			case vote := <-votes:
+				if tally >= rf.majority {
+					DPrintf("🎈 Election quorum on %v", rf.me)
+					send <- true
+					return
+				}
+				if vote.VoteGranted {
+					DPrintf("✏️Counting votes on %v", rf.me)
+					tally++
+				}
+			}
+		}
+	}(result)
+	return result
+
+}
 func (rf *Raft) makeVoteRequest() RequestVoteArgs {
 	rf.mu.RLock()
 	defer rf.mu.RUnlock()
@@ -277,14 +314,14 @@ type RequestVoteArgs struct {
 // example RequestVote RPC reply structure.
 //
 type RequestVoteReply struct {
-	Test string
+	VoteGranted bool
 }
 
 //
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
-	reply.Test = "Pong"
+	reply.VoteGranted = true
 	DPrintf("🎉 Got a vote request %+v. Replied: %+v", args, reply)
 	// Your code here.
 }
@@ -348,6 +385,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
+	rf.majority = (len(peers)/2 - 1)
 
 	rf.heartbeatTimeout = basetime * time.Millisecond
 	rf.electionTimeout = 2 * basetime * time.Millisecond
