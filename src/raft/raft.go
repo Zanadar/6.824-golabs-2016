@@ -250,6 +250,7 @@ func (rf *Raft) countVotes(votes chan *RequestVoteReply) (result chan bool) {
 	return result
 
 }
+
 func (rf *Raft) makeVoteRequest() RequestVoteArgs {
 	rf.mu.RLock()
 	defer rf.mu.RUnlock()
@@ -260,18 +261,48 @@ func (rf *Raft) makeVoteRequest() RequestVoteArgs {
 	return request
 }
 
+func (rf *Raft) makeAppendEntries(arg string) AppendEntriesArgs {
+	rf.mu.RLock()
+	defer rf.mu.RUnlock()
+	request := AppendEntriesArgs{arg}
+	return request
+}
+
+func (rf *Raft) dispathAppendEntries() (replies chan *AppendEntriesReply) {
+	// Vote for yourself
+	DPrintf("⏲  💖 Leader %v sent appendEntriesRPC", rf.me)
+	others := exclude(rf.peers, rf.me)
+	DPrintf("Others: %v", others)
+	replies = make(chan *AppendEntriesReply, len(others))
+	request := rf.makeAppendEntries("Ping")
+	for peer, _ := range others {
+		go func(v int) {
+			DPrintf("Sending to %v Appending with: %+v", v, request)
+			reply := &AppendEntriesReply{}
+			now := time.Now()
+			rf.sendAppendEntries(v, request, reply)
+			replies <- reply
+			diff := time.Since(now)
+			DPrintf("Request took, %+v", diff)
+		}(peer)
+	}
+	return replies
+}
+
 func (rf *Raft) runLeader() {
 	heartbeatTimeout := randomTimeout(rf.heartbeatTimeout)
+	replies := rf.dispathAppendEntries()
 
 	select {
 	case <-heartbeatTimeout:
 		DPrintf("⏲ 💖Leader %v sent heartbeat", rf.me)
-		rf.makeFollower()
-		return
+		heartbeatTimeout = randomTimeout(rf.heartbeatTimeout)
 	case <-rf.heartBeatChan:
 		DPrintf("💖 Candidate %v received heartbeat", rf.me)
 		rf.makeFollower()
 		return
+	case <-replies:
+		DPrintf("I Got something!!!")
 	}
 }
 
@@ -317,13 +348,27 @@ type RequestVoteReply struct {
 	VoteGranted bool
 }
 
+type AppendEntriesArgs struct {
+	Test string
+}
+
+type AppendEntriesReply struct {
+	Test string
+}
+
 //
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	reply.VoteGranted = true
-	DPrintf("🎉 Got a vote request %+v. Replied: %+v", args, reply)
+	DPrintf("I (%v) 🎉 got a vote request %+v. Replied: %+v", rf.me, args, reply)
 	// Your code here.
+}
+
+func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
+	DPrintf("Node %v 💖 Got a vote request %+v. Replied: %+v", rf.me, args, reply)
+	reply.Test = "Pong"
+	go func() { rf.heartBeatChan <- true }()
 }
 
 //
@@ -337,6 +382,11 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 //
 func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	return ok
+}
+
+func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	return ok
 }
 
