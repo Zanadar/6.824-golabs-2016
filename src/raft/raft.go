@@ -58,9 +58,13 @@ type Raft struct {
 
 	electionTimeout  time.Duration
 	heartbeatTimeout time.Duration
+	leaderLease      time.Duration
 
 	heartBeatChan chan bool
 	lastContact   time.Time
+
+	killed bool
+	killCh chan bool
 
 	// Your data here.
 	// Look at the paper's Figure 2 for a description of what
@@ -178,18 +182,18 @@ func (rf *Raft) GetState() (int, bool) {
 func (rf *Raft) run() {
 	for {
 		switch {
+		case rf.killed:
+			DPrintf("Shutdown  🔫 ")
+			return
 		case rf.isFollower():
 			rf.runFollower()
 		case rf.isCandidate():
 			DPrintf("✋ Candidate state hit on %v", rf.me)
 			rf.runCandidate()
-			break
 		case rf.isLeader():
 			DPrintf("💪 leader state hit on %v", rf.me)
 			rf.runLeader()
-			break
 		}
-		DPrintf("---------------------------At the bottom and my role is %v ", rf.role)
 	}
 }
 
@@ -199,6 +203,10 @@ func (rf *Raft) runFollower() {
 	for {
 		DPrintf("👍🏻Follower state it on %v", rf.me)
 		select {
+		case <-rf.killCh:
+			close(rf.killCh)
+			DPrintf("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx------------------  Killed ")
+			return
 		case <-heartbeatTimeout:
 			heartbeatTimeout = randomTimeout(rf.heartbeatTimeout)
 			DPrintf("⏲ follower %v election timed out", rf.me)
@@ -225,6 +233,10 @@ func (rf *Raft) runCandidate() {
 
 	for {
 		select {
+		case <-rf.killCh:
+			close(rf.killCh)
+			DPrintf("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx------------------  Killed ")
+			return
 		case <-rf.heartBeatChan:
 			DPrintf("💖 Candidate %v received heartbeat", rf.me)
 			rf.makeFollower()
@@ -254,6 +266,7 @@ func (rf *Raft) dispatchVotes() (votes chan *RequestVoteReply) {
 	// Vote for yourself
 	others := exclude(rf.peers, rf.me)
 	votes = make(chan *RequestVoteReply, len(others))
+	votes <- &RequestVoteReply{rf.getTerm(), true}
 	request := rf.makeVoteRequest()
 	for _, v := range others {
 		go func(v int) {
@@ -264,31 +277,6 @@ func (rf *Raft) dispatchVotes() (votes chan *RequestVoteReply) {
 		}(v)
 	}
 	return votes
-}
-
-func (rf *Raft) countVotes(votes chan *RequestVoteReply) (result chan bool) {
-	tally := 0
-	result = make(chan bool, 1)
-	go func(send chan bool) {
-		for {
-			DPrintf("Tally is %v", tally)
-			if tally == rf.majority {
-				DPrintf("🎈 Election quorum on %v", rf.me)
-				send <- true
-				return
-			}
-			select {
-			case vote := <-votes:
-				if vote.VoteGranted {
-					DPrintf("✏️Counting votes on %v", rf.me)
-					tally++
-				}
-				DPrintf("Tally is %v", tally)
-			}
-		}
-	}(result)
-	return result
-
 }
 
 func (rf *Raft) makeVoteRequest() RequestVoteArgs {
@@ -309,38 +297,67 @@ func (rf *Raft) makeAppendEntries(arg string) AppendEntriesArgs {
 }
 
 func (rf *Raft) dispathAppendEntries() (replies chan *AppendEntriesReply) {
-	// Vote for yourself
 	DPrintf("⏲  💖 Leader %v sent appendEntriesRPC", rf.me)
 	others := exclude(rf.peers, rf.me)
 	DPrintf("Others: %v", others)
 	replies = make(chan *AppendEntriesReply, len(others))
 	request := rf.makeAppendEntries("Ping")
-	for peer, _ := range others {
+	for _, peer := range others {
 		go func(v int) {
 			DPrintf("Sending to %v Appending with: %+v", v, request)
 			reply := &AppendEntriesReply{}
 			now := time.Now()
-			rf.sendAppendEntries(v, request, reply)
+			ok := rf.sendAppendEntries(v, request, reply)
+			if ok {
+				diff := time.Since(now)
+				DPrintf("Request took, %+v", diff)
+			}
 			replies <- reply
-			diff := time.Since(now)
-			DPrintf("Request took, %+v", diff)
 		}(peer)
 	}
 	return replies
 }
 
 func (rf *Raft) runLeader() {
-	heartbeatTimeout := randomTimeout(rf.heartbeatTimeout)
+	heartBeat := randomTimeout(rf.heartbeatTimeout)
+	results := rf.dispathAppendEntries()
+	quorum := rf.getMajority()
+	contact := 1
 
-	select {
-	case <-heartbeatTimeout:
-		DPrintf("⏲ 💖Leader %v sent heartbeat", rf.me)
-		go rf.dispathAppendEntries()
-		heartbeatTimeout = randomTimeout(rf.heartbeatTimeout)
-	case <-rf.heartBeatChan:
-		DPrintf("💖 Candidate %v received heartbeat", rf.me)
-		rf.makeFollower()
-		return
+	for {
+		select {
+		case <-rf.killCh:
+			close(rf.killCh)
+			DPrintf("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx------------------  Killed ")
+			return
+		case reply := <-results:
+			DPrintf("Got something at %v", time.Now())
+			rf.setLastContact()
+			if reply.Term > rf.getTerm() {
+				DPrintf("Greater Term")
+				rf.setTerm(reply.Term)
+				rf.makeFollower()
+				return
+			}
+			contact++
+		case <-heartBeat:
+			if delay := time.Since(rf.lastContact); delay > (2000 * time.Millisecond) {
+				DPrintf("Took too long. Delay was %v. Timeout is: %v", delay, rf.heartbeatTimeout)
+				rf.makeFollower()
+				return
+			}
+			if contact < quorum {
+				DPrintf("Not enough replies")
+				rf.makeFollower()
+				return
+			}
+			results = rf.dispathAppendEntries()
+			heartBeat = randomTimeout(rf.heartbeatTimeout)
+		case <-rf.heartBeatChan:
+			DPrintf("💖 Candidate %v received heartbeat", rf.me)
+			rf.makeFollower()
+			return
+		}
 	}
 }
 
@@ -469,6 +486,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 //
 func (rf *Raft) Kill() {
 	// Your code here, if desired.
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.killed = true
+	go func() { rf.killCh <- true }()
 }
 
 //
@@ -487,8 +508,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 	rf.majority = (len(rf.peers)/2 + 1)
 
+	rf.killCh = make(chan bool)
 	rf.heartbeatTimeout = basetime * time.Millisecond
 	rf.electionTimeout = basetime * time.Millisecond
+	rf.electionTimeout = basetime / 2 * time.Millisecond
 	rf.makeFollower()
 
 	// Your initialization code here.
